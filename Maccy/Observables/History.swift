@@ -133,9 +133,11 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     try? Storage.shared.context.save()
   }
 
+  /// - Parameter mergeSimilarItems: When false, the new row is always kept (e.g. pins created in Settings), even if
+  ///   clipboard contents match an existing history entry.
   @discardableResult
   @MainActor
-  func add(_ item: HistoryItem) -> HistoryItemDecorator {
+  func add(_ item: HistoryItem, mergeSimilarItems: Bool = true) -> HistoryItemDecorator {
     if #available(macOS 15.0, *) {
       try? History.shared.insertIntoStorage(item)
     } else {
@@ -144,13 +146,14 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     }
 
     var removedItemIndex: Int?
-    if let existingHistoryItem = findSimilarItem(item) {
+    if mergeSimilarItems, let existingHistoryItem = findSimilarItem(item) {
       if isModified(item) == nil {
         item.contents = existingHistoryItem.contents
       }
       item.firstCopiedAt = existingHistoryItem.firstCopiedAt
       item.numberOfCopies += existingHistoryItem.numberOfCopies
       item.pin = existingHistoryItem.pin
+      item.pinSortIndex = existingHistoryItem.pinSortIndex
       item.title = existingHistoryItem.title
       if !item.fromMaccy {
         item.application = existingHistoryItem.application
@@ -175,10 +178,21 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
 
     var itemDecorator: HistoryItemDecorator
     if let pin = item.pin {
-      itemDecorator = HistoryItemDecorator(item, shortcuts: KeyShortcut.create(character: pin))
-      // Keep pins in the same place.
+      let pinShortcuts: [KeyShortcut] = pin.isEmpty ? [] : KeyShortcut.create(character: pin)
+      itemDecorator = HistoryItemDecorator(item, shortcuts: pinShortcuts)
+      // Keep pins in the same place when replacing a duplicate; otherwise insert by sort order.
       if let removedItemIndex {
         all.insert(itemDecorator, at: removedItemIndex)
+      } else {
+        let sortedItems = sorter.sort(all.map(\.item) + [item])
+        if let index = sortedItems.firstIndex(of: item) {
+          all.insert(itemDecorator, at: index)
+        }
+      }
+      items = all
+      updateUnpinnedShortcuts()
+      Task {
+        AppState.shared.popup.needsResize = true
       }
     } else {
       itemDecorator = HistoryItemDecorator(item)
@@ -212,24 +226,17 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
   @MainActor
   func clear() {
     withLogging("Clearing history") {
-      all.forEach { item in
-        if item.isUnpinned {
-          cleanup(item)
-        }
-      }
+      let unpinnedDecorators = all.filter(\.isUnpinned)
+      unpinnedDecorators.forEach { cleanup($0) }
+      let modelsToDelete = unpinnedDecorators.map(\.item)
       all.removeAll(where: \.isUnpinned)
       sessionLog.removeValues { $0.pin == nil }
       items = all
 
       try? Storage.shared.context.transaction {
-        try? Storage.shared.context.delete(
-          model: HistoryItem.self,
-          where: #Predicate { $0.pin == nil }
-        )
-        try? Storage.shared.context.delete(
-          model: HistoryItemContent.self,
-          where: #Predicate { $0.item?.pin == nil }
-        )
+        for model in modelsToDelete {
+          Storage.shared.context.delete(model)
+        }
       }
       Storage.shared.context.processPendingChanges()
       try? Storage.shared.context.save()
@@ -421,6 +428,23 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     pasteStack = nil
   }
 
+  /// Call after changing `pinSortIndex` on pinned items (e.g. from settings) so the popup list order matches storage.
+  @MainActor
+  func refreshSortOrder() {
+    let sortedItems = sorter.sort(all.map(\.item))
+    all = sortedItems.compactMap { model in
+      all.first(where: { $0.item === model })
+    }
+    if searchQuery.isEmpty {
+      items = all
+    } else {
+      updateItems(search.search(string: searchQuery, within: all))
+    }
+    Task {
+      AppState.shared.popup.needsResize = true
+    }
+  }
+
   @MainActor
   func togglePin(_ item: HistoryItemDecorator?) {
     guard let item else { return }
@@ -479,8 +503,10 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
 
   private func updateShortcuts() {
     for item in pinnedItems {
-      if let pin = item.item.pin {
+      if let pin = item.item.pin, !pin.isEmpty {
         item.shortcuts = KeyShortcut.create(character: pin)
+      } else if item.item.pin != nil {
+        item.shortcuts = []
       }
     }
 

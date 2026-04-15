@@ -177,9 +177,10 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
   func togglePin() {
     if item.pin != nil {
       item.pin = nil
+      item.pinSortIndex = 0
     } else {
-      let pin = HistoryItem.randomAvailablePin
-      item.pin = pin
+      item.pin = ""
+      item.pinSortIndex = HistoryItem.nextPinSortIndex()
     }
   }
 
@@ -187,9 +188,12 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     _ = withObservationTracking {
       item.pin
     } onChange: {
-      DispatchQueue.main.async {
-        if let pin = self.item.pin {
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        if let pin = self.item.pin, !pin.isEmpty {
           self.shortcuts = KeyShortcut.create(character: pin)
+        } else if self.item.pin != nil {
+          self.shortcuts = []
         }
         self.synchronizeItemPin()
       }
@@ -200,7 +204,8 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     _ = withObservationTracking {
       item.title
     } onChange: {
-      DispatchQueue.main.async {
+      Task { @MainActor [weak self] in
+        guard let self else { return }
         self.title = self.item.title
         self.synchronizeItemTitle()
       }

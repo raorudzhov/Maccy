@@ -39,13 +39,24 @@ class HistoryItem {
     let descriptor = FetchDescriptor<HistoryItem>(
       predicate: #Predicate { $0.pin != nil }
     )
-    let pins = try? Storage.shared.context.fetch(descriptor).compactMap({ $0.pin })
+    // Empty string means “pinned without a shortcut”; it does not consume a letter from `supportedPins`.
+    let pins = try? Storage.shared.context.fetch(descriptor).compactMap { $0.pin }.filter { !$0.isEmpty }
     let assignedPins = Set(pins ?? [])
     return Array(supportedPins.subtracting(assignedPins))
   }
 
   @MainActor
   static var randomAvailablePin: String { availablePins.randomElement() ?? "" }
+
+  /// Order of this item among pinned entries (lower = closer to the start of the pins block). Ignored when `pin == nil`.
+  @MainActor
+  static func nextPinSortIndex() -> Int {
+    let descriptor = FetchDescriptor<HistoryItem>(
+      predicate: #Predicate { $0.pin != nil }
+    )
+    let pinned = (try? Storage.shared.context.fetch(descriptor)) ?? []
+    return (pinned.map(\.pinSortIndex).max() ?? -1) + 1
+  }
 
   private static let transientTypes: [String] = [
     NSPasteboard.PasteboardType.modified.rawValue,
@@ -64,6 +75,7 @@ class HistoryItem {
   var lastCopiedAt: Date = Date.now
   var numberOfCopies: Int = 1
   var pin: String?
+  var pinSortIndex: Int = 0
   var title = ""
 
   @Relationship(deleteRule: .cascade, inverse: \HistoryItemContent.item)

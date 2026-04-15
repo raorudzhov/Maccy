@@ -24,9 +24,33 @@ class Sorter {
   }
 
   func sort(_ items: [HistoryItem], by: By = Defaults[.sortBy]) -> [HistoryItem] {
-    return items
-      .sorted(by: { return bySortingAlgorithm($0, $1, by) })
-      .sorted(by: byPinned)
+    items.sorted { lhs, rhs in
+      if let lhsBeforeRhs = comparePinnedGroups(lhs, rhs) {
+        return lhsBeforeRhs
+      }
+
+      if lhs.pin != nil, rhs.pin != nil, lhs.pinSortIndex != rhs.pinSortIndex {
+        return lhs.pinSortIndex < rhs.pinSortIndex
+      }
+
+      return bySortingAlgorithm(lhs, rhs, by)
+    }
+  }
+
+  /// `true` if `lhs` should be ordered before `rhs`; `nil` if both are in the same pinned / unpinned group.
+  private func comparePinnedGroups(_ lhs: HistoryItem, _ rhs: HistoryItem) -> Bool? {
+    let lhsPinned = lhs.pin != nil
+    let rhsPinned = rhs.pin != nil
+    if lhsPinned == rhsPinned {
+      return nil
+    }
+
+    if Defaults[.pinTo] == .bottom {
+      // Unpinned first, then pinned.
+      return !lhsPinned && rhsPinned
+    }
+    // Pinned first, then unpinned.
+    return lhsPinned && !rhsPinned
   }
 
   private func bySortingAlgorithm(_ lhs: HistoryItem, _ rhs: HistoryItem, _ by: By) -> Bool {
@@ -37,14 +61,6 @@ class Sorter {
       return lhs.numberOfCopies > rhs.numberOfCopies
     default:
       return lhs.lastCopiedAt > rhs.lastCopiedAt
-    }
-  }
-
-  private func byPinned(_ lhs: HistoryItem, _ rhs: HistoryItem) -> Bool {
-    if Defaults[.pinTo] == .bottom {
-      return (lhs.pin == nil) && (rhs.pin != nil)
-    } else {
-      return (lhs.pin != nil) && (rhs.pin == nil)
     }
   }
 }
